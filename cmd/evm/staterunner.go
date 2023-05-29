@@ -26,6 +26,7 @@ import (
 
 	"github.com/c2h5oh/datasize"
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon-lib/kv/mdbx"
 	"github.com/ledgerwatch/log/v3"
 	mdbx2 "github.com/torquem-ch/mdbx-go/mdbx"
@@ -75,49 +76,6 @@ func stateTestCmd(ctx *cli.Context) error {
 	} else if ctx.Bool(DebugFlag.Name) {
 		cfg.Tracer = logger.NewStructLogger(config)
 	}
-
-	if len(ctx.Args().First()) != 0 {
-		return runStateTest(ctx.Args().First(), cfg, ctx.Bool(MachineFlag.Name))
-	}
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		fname := scanner.Text()
-		if len(fname) == 0 {
-			return nil
-		}
-		if err := runStateTest(fname, cfg, ctx.Bool(MachineFlag.Name)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// runStateTest loads the state-test given by fname, and executes the test.
-func runStateTest(fname string, cfg vm.Config, jsonOut bool) error {
-	// Load the test content from the input file
-	src, err := os.ReadFile(fname)
-	if err != nil {
-		return err
-	}
-	var stateTests map[string]tests.StateTest
-	if err = json.Unmarshal(src, &stateTests); err != nil {
-		return err
-	}
-
-	// Iterate over all the stateTests, run them and aggregate the results
-	results, err := aggregateResultsFromStateTests(stateTests, cfg, jsonOut)
-	if err != nil {
-		return err
-	}
-
-	out, _ := json.MarshalIndent(results, "", "  ")
-	fmt.Println(string(out))
-	return nil
-}
-
-func aggregateResultsFromStateTests(
-	stateTests map[string]tests.StateTest, cfg vm.Config,
-	jsonOut bool) ([]StatetestResult, error) {
 	//this DB is shared. means:
 	// - faster sequential tests: don't need create/delete db
 	// - less parallelism: multiple processes can open same DB but only 1 can create rw-transaction (other will wait when 1-st finish)
@@ -129,6 +87,50 @@ func aggregateResultsFromStateTests(
 		GrowthStep(1 * datasize.MB).
 		MustOpen()
 	defer db.Close()
+
+	if len(ctx.Args().First()) != 0 {
+		return runStateTest(ctx.Args().First(), cfg, ctx.Bool(MachineFlag.Name), db)
+	}
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		fname := scanner.Text()
+		if len(fname) == 0 {
+			return nil
+		}
+		if err := runStateTest(fname, cfg, ctx.Bool(MachineFlag.Name), db); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runStateTest loads the state-test given by fname, and executes the test.
+func runStateTest(fname string, cfg vm.Config, jsonOut bool, db kv.RwDB) error {
+	// Load the test content from the input file
+	src, err := os.ReadFile(fname)
+	if err != nil {
+		return err
+	}
+	var stateTests map[string]tests.StateTest
+	if err = json.Unmarshal(src, &stateTests); err != nil {
+		return err
+	}
+
+	// Iterate over all the stateTests, run them and aggregate the results
+	results, err := aggregateResultsFromStateTests(stateTests, cfg, jsonOut, db)
+	if err != nil {
+		return err
+	}
+
+	out, _ := json.MarshalIndent(results, "", "  ")
+	fmt.Println(string(out))
+	return nil
+}
+
+func aggregateResultsFromStateTests(
+	stateTests map[string]tests.StateTest, cfg vm.Config,
+	jsonOut bool,
+	db kv.RwDB) ([]StatetestResult, error) {
 
 	tx, txErr := db.BeginRw(context.Background())
 	if txErr != nil {
